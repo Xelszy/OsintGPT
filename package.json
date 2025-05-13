@@ -1,0 +1,45 @@
+{
+  "name": "ai-pentest-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "postinstall": "patch-package"
+  },
+  "dependencies": {
+    "@tailwindcss/line-clamp": "^0.4.4",
+    "axios": "^1.9.0",
+    "framer-motion": "^12.11.0",
+    "jsonwebtoken": "^9.0.2",
+    "next": "15.3.2",
+    "nhentai-api": "^3.4.3",
+    "nhentai-api-js": "github:nhentai-dev/API",
+    "node-fetch": "^3.3.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-icons": "^5.5.0",
+    "serpapi": "^1.1.1",
+    "tailwindcss-animate": "^1.0.7",
+    "whois-json": "^2.0.4"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^2.1.4",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@typescript-eslint/eslint-plugin": "^8.32.1",
+    "@typescript-eslint/parser": "^8.32.1",
+    "autoprefixer": "^10.4.21",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "15.3.2",
+    "eslint-plugin-react": "^7.37.5",
+    "patch-package": "^8.0.0",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5"
+  }
+}

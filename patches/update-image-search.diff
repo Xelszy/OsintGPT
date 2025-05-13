@@ -1,0 +1,223 @@
+From 8c26d85bc7f9df9d0f65fafa4cfab3e5e078ebd6 Mon Sep 17 00:00:00 2001
+From: Developer <dev@example.com>
+Date: Tue, 29 Jul 2024 00:00:00 +0000
+Subject: [PATCH] Add support for image search results
+
+---
+ src/app/page.tsx                          | 15 ++++++++++++---
+ src/components/ImageSearchResultsDisplay.tsx | 131 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 143 insertions(+), 3 deletions(-)
+ create mode 100644 src/components/ImageSearchResultsDisplay.tsx
+
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index 1234567..abcdef0 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -1,6 +1,7 @@
+ 'use client';
+ import React, { useState, useRef, useEffect } from 'react';
++import ImageSearchResultsDisplay from '../components/ImageSearchResultsDisplay';
+ 
+ function formatWhois(json: any) {
+   if (!json || typeof json !== 'object') return String(json);
+@@ -95,6 +96,8 @@ export default function Home() {
+     vulnerabilityAnalysis?: string;
+     wafData?: any;
+     subdomainData?: any;
++    isImageSearch?: boolean;
++    imageSearchResults?: any;
+   }[]>([]);
+   const [input, setInput] = useState('');
+   const [loading, setLoading] = useState(false);
+@@ -422,6 +425,8 @@ export default function Home() {
+       // Extract metadata from the response
+       const censored = data.metadata?.censored || false;
+       const censoredFields = data.metadata?.censoredFields || [];
++      const isImageSearch = data.metadata?.imageSearch || false;
++      const imageSearchResults = data.metadata?.searchResults || null;
+       
+       // Try to extract WHOIS JSON and explanation
+       let whoisJson = null;
+@@ -462,7 +467,11 @@ export default function Home() {
+           isLeakOsint: isLeakOsintResp,
+           leakOsintJson,
+           censored,
+-          censoredFields
++          censoredFields,
++          // Include image search data if available
++          isImageSearch,
++          imageSearchResults
++        
+         }
+       ]);
+     } catch (e: unknown) {
+@@ -2307,6 +2316,10 @@ export default function Home() {
+                   <div style={{ marginBottom: 8 }}>{msg.text}</div>
+                   <WebSearchResultsDisplay results={msg.webSearchResults} />
+                 </div>
++              ) : msg.sender === 'ai' && msg.isImageSearch && msg.imageSearchResults ? (
++                <div>
++                  <div style={{ marginBottom: 8 }}>{msg.text}</div>
++                  <ImageSearchResultsDisplay results={msg.imageSearchResults} />
++                </div>
+               ) : msg.sender === 'ai' && msg.vulnerabilityAnalysis ? (
+                 <VulnerabilityAnalysisDisplay text={msg.text} />
+               ) : msg.sender === 'ai' && msg.isDork ? (
+diff --git a/src/components/ImageSearchResultsDisplay.tsx b/src/components/ImageSearchResultsDisplay.tsx
+new file mode 100644
+index 0000000..123abc
+--- /dev/null
++++ b/src/components/ImageSearchResultsDisplay.tsx
+@@ -0,0 +1,131 @@
++import React from 'react';
++
++interface ImageSearchResultsDisplayProps {
++  results: any;
++}
++
++const ImageSearchResultsDisplay: React.FC<ImageSearchResultsDisplayProps> = ({ results }) => {
++  if (!results) return null;
++  
++  return (
++    <div style={{
++      background: '#121212',
++      padding: 16,
++      borderRadius: 8,
++      border: '1px solid #333',
++      marginTop: 12
++    }}>
++      <h3 style={{ margin: '0 0 16px 0', color: '#00cc89' }}>Image Search Results</h3>
++      
++      {/* Display text found in the image if available */}
++      {results.vision_text && (
++        <div style={{ marginBottom: 16 }}>
++          <h4 style={{ margin: '0 0 8px 0', color: '#0070f3' }}>Text from Image</h4>
++          <div style={{ 
++            background: '#1a1a1a', 
++            padding: 12, 
++            borderRadius: 4, 
++            fontSize: 14 
++          }}>
++            {results.vision_text}
++          </div>
++        </div>
++      )}
++      
++      {/* Display similar images */}
++      {results.similar_images && results.similar_images.length > 0 && (
++        <div style={{ marginBottom: 16 }}>
++          <h4 style={{ margin: '0 0 8px 0', color: '#0070f3' }}>Similar Images</h4>
++          <div style={{ 
++            display: 'grid', 
++            gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', 
++            gap: 12 
++          }}>
++            {results.similar_images.slice(0, 6).map((img: any, i: number) => (
++              <div key={i} style={{ textAlign: 'center' }}>
++                <a 
++                  href={img.link || img.original} 
++                  target="_blank" 
++                  rel="noopener noreferrer"
++                  style={{ textDecoration: 'none' }}
++                >
++                  <img 
++                    src={img.thumbnail || img.original} 
++                    alt={img.title || 'Similar image'} 
++                    style={{ 
++                      maxWidth: '100%', 
++                      height: 'auto', 
++                      borderRadius: 4,
++                      border: '1px solid #333' 
++                    }} 
++                  />
++                  <div style={{ 
++                    fontSize: 12, 
++                    marginTop: 4, 
++                    color: '#ccc',
++                    textOverflow: 'ellipsis',
++                    overflow: 'hidden',
++                    whiteSpace: 'nowrap' 
++                  }}>
++                    {img.title || 'Similar image'}
++                  </div>
++                </a>
++              </div>
++            ))}
++          </div>
++        </div>
++      )}
++      
++      {/* Display source sites */}
++      {results.images_results && results.images_results.length > 0 && (
++        <div>
++          <h4 style={{ margin: '0 0 8px 0', color: '#0070f3' }}>Source Sites</h4>
++          <div style={{ 
++            display: 'flex', 
++            flexDirection: 'column', 
++            gap: 8 
++          }}>
++            {results.images_results.slice(0, 5).map((result: any, i: number) => (
++              <div key={i} style={{ 
++                display: 'flex',
++                alignItems: 'center',
++                gap: 12,
++                padding: 8,
++                background: '#1a1a1a',
++                borderRadius: 4
++              }}>
++                {result.thumbnail && (
++                  <img 
++                    src={result.thumbnail} 
++                    alt={result.title || 'Image source'} 
++                    style={{ 
++                      width: 48, 
++                      height: 48, 
++                      objectFit: 'cover',
++                      borderRadius: 4,
++                      border: '1px solid #333' 
++                    }} 
++                  />
++                )}
++                <div style={{ flex: 1 }}>
++                  <div style={{ 
++                    fontSize: 14, 
++                    fontWeight: 'bold',
++                    marginBottom: 4,
++                    color: '#eee' 
++                  }}>
++                    {result.title || 'Unknown source'}
++                  </div>
++                  <a 
++                    href={result.link || result.original} 
++                    target="_blank" 
++                    rel="noopener noreferrer" 
++                    style={{ 
++                      fontSize: 12, 
++                      color: '#0070f3',
++                      textDecoration: 'none'
++                    }}
++                  >
++                    {result.source || result.link || 'Unknown link'}
++                  </a>
++                </div>
++              </div>
++            ))}
++          </div>
++        </div>
++      )}
++      
++      <div style={{ 
++        marginTop: 16, 
++        fontSize: 12, 
++        color: '#777',
++        textAlign: 'right' 
++      }}>
++        Results provided by Yandex Image Search
++      </div>
++    </div>
++  );
++};
++
++export default ImageSearchResultsDisplay;
+-- 
+2.42.0 

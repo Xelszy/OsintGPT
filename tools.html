@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tools - AI Pentest Assistant</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            color: #333;
+            background-color: #fff;
+        }
+        
+        header {
+            border-bottom: 1px solid #ddd;
+            padding: 10px 15px;
+        }
+        
+        h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        
+        .tabs {
+            display: flex;
+            margin-top: 10px;
+        }
+        
+        .tab {
+            padding: 5px 10px;
+            background-color: #eee;
+            margin-right: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+        }
+        
+        .tab.active {
+            background-color: #ddd;
+            font-weight: bold;
+        }
+        
+        main {
+            padding: 20px;
+            min-height: 500px;
+        }
+        
+        .tools-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 20px;
+        }
+        
+        .tool-card {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            background-color: #fff;
+        }
+        
+        .tool-card h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+        }
+        
+        .tool-card p {
+            margin-bottom: 15px;
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .button {
+            background-color: #eee;
+            border: 1px solid #ddd;
+            padding: 5px 10px;
+            cursor: pointer;
+            display: inline-block;
+        }
+        
+        .button.primary {
+            background-color: #2e88db;
+            color: white;
+            border-color: #2e88db;
+        }
+        
+        .footer-button {
+            position: fixed;
+            left: 20px;
+            bottom: 20px;
+            width: 40px;
+            height: 40px;
+            background-color: #333;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>AI Pentest Assistant</h1>
+        <div class="tabs">
+            <a class="tab" href="index.html">dashboard</a>
+            <a class="tab" href="scan.html">scans</a>
+            <a class="tab active" href="tools.html">tools</a>
+            <a class="tab" href="#">reports</a>
+        </div>
+    </header>
+    
+    <main>
+        <h2>Pentest Tools</h2>
+        
+        <div class="tools-grid">
+            <div class="tool-card">
+                <h3>Port Scanner</h3>
+                <p>Scan for open ports on target systems to identify potential entry points.</p>
+                <button class="button primary">Run Tool</button>
+            </div>
+            
+            <div class="tool-card">
+                <h3>Web Crawler</h3>
+                <p>Discover and map website structure to find hidden endpoints and resources.</p>
+                <button class="button primary">Run Tool</button>
+            </div>
+            
+            <div class="tool-card">
+                <h3>DNS Enumeration</h3>
+                <p>Collect DNS information to identify subdomains and network infrastructure.</p>
+                <button class="button primary">Run Tool</button>
+            </div>
+            
+            <div class="tool-card">
+                <h3>SQL Injection Tester</h3>
+                <p>Check web applications for SQL injection vulnerabilities.</p>
+                <button class="button primary">Run Tool</button>
+            </div>
+            
+            <div class="tool-card">
+                <h3>Password Strength</h3>
+                <p>Analyze password policies and check for weak credentials.</p>
+                <button class="button primary">Run Tool</button>
+            </div>
+            
+            <div class="tool-card">
+                <h3>SSL/TLS Checker</h3>
+                <p>Verify SSL/TLS configurations and identify security issues.</p>
+                <button class="button primary">Run Tool</button>
+            </div>
+        </div>
+    </main>
+    
+    <div class="footer-button">N</div>
+</body>
+</html> 

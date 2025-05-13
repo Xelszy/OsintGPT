@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scan - AI Pentest Assistant</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            color: #333;
+            background-color: #fff;
+        }
+        
+        header {
+            border-bottom: 1px solid #ddd;
+            padding: 10px 15px;
+        }
+        
+        h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        
+        .tabs {
+            display: flex;
+            margin-top: 10px;
+        }
+        
+        .tab {
+            padding: 5px 10px;
+            background-color: #eee;
+            margin-right: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            color: inherit;
+        }
+        
+        .tab.active {
+            background-color: #ddd;
+            font-weight: bold;
+        }
+        
+        main {
+            padding: 20px;
+            min-height: 500px;
+        }
+        
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 20px;
+            background-color: #fff;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        
+        .button-group {
+            display: flex;
+            margin-bottom: 15px;
+        }
+        
+        .button {
+            background-color: #eee;
+            border: 1px solid #ddd;
+            padding: 5px 10px;
+            margin-right: 5px;
+            cursor: pointer;
+        }
+        
+        .button.primary {
+            background-color: #2e88db;
+            color: white;
+            border-color: #2e88db;
+        }
+        
+        .footer-button {
+            position: fixed;
+            left: 20px;
+            bottom: 20px;
+            width: 40px;
+            height: 40px;
+            background-color: #333;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>AI Pentest Assistant</h1>
+        <div class="tabs">
+            <a class="tab" href="index.html">dashboard</a>
+            <a class="tab active" href="scan.html">scans</a>
+            <a class="tab" href="#">tools</a>
+            <a class="tab" href="#">reports</a>
+        </div>
+    </header>
+    
+    <main>
+        <h2>New Security Scan</h2>
+        
+        <div class="card">
+            <h3>Target Configuration</h3>
+            
+            <div class="form-group">
+                <label for="target">Target URL or IP</label>
+                <input type="text" id="target" placeholder="https://example.com or 192.168.1.1">
+            </div>
+            
+            <div class="form-group">
+                <label>Scan Type</label>
+                <div class="button-group">
+                    <button class="button primary">Full Scan</button>
+                    <button class="button">Quick Scan</button>
+                    <button class="button">Passive Only</button>
+                    <button class="button">Custom</button>
+                </div>
+            </div>
+            
+            <div style="text-align: right;">
+                <button class="button primary">Start Scan</button>
+            </div>
+        </div>
+    </main>
+    
+    <div class="footer-button">N</div>
+</body>
+</html> 

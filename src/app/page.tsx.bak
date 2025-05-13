@@ -1,0 +1,2353 @@
+'use client';
+import React, { useState, useRef, useEffect } from 'react';
+
+function formatWhois(json: any) {
+  if (!json || typeof json !== 'object') return String(json);
+  // Convert UNIX timestamps to readable dates if present
+  const dateFields = ['creation_date', 'expiration_date', 'updated_date'];
+  const formatted = { ...json };
+  dateFields.forEach((field) => {
+    if (typeof formatted[field] === 'number') {
+      const date = new Date(formatted[field] * 1000);
+      formatted[field + '_str'] = date.toISOString();
+    }
+  });
+  return JSON.stringify(formatted, null, 2);
+}
+
+// Function to detect if a response is from LeakOsint
+function isLeakOsintResponse(text: string): boolean {
+  // Check if response starts with typical LeakOsint formatted response pattern
+  return (text.startsWith('I searched for information about') || text.includes('=== Database:')) && 
+         text.includes('--- Original Data ---');
+}
+
+// Function to format the LeakOsint response text to parse into component parts
+function parseLeakOsintResponse(text: string): { 
+  conversation: string; 
+  originalJson: any | null;
+} {
+  try {
+    // Check for the marker for original data
+    if (text.includes('--- Original Data ---')) {
+      // Split the response at the marker for original data
+      const parts = text.split('--- Original Data ---');
+      
+      if (parts.length < 2) {
+        console.warn("Could not split response at marker", text);
+        return { conversation: text, originalJson: null };
+      }
+      
+      const conversation = parts[0].trim();
+      
+      // Extract JSON string from the code block
+      const jsonMatch = parts[1].match(/```json\n([\s\S]*?)\n```/);
+      let originalJson: any = null;
+      
+      if (jsonMatch && jsonMatch[1]) {
+        try {
+          const jsonStr = jsonMatch[1].trim();
+          console.log("Found JSON data, length:", jsonStr.length);
+          originalJson = JSON.parse(jsonStr);
+          console.log("Successfully parsed JSON with keys:", originalJson ? Object.keys(originalJson) : []);
+          
+          // Verify the structure
+          if (originalJson && originalJson.List) {
+            console.log("Databases in the response:", Object.keys(originalJson.List));
+          } else {
+            console.warn("No List property in parsed JSON");
+          }
+        } catch (e) {
+          console.error("Failed to parse LeakOsint JSON:", e);
+        }
+      } else {
+        console.warn("No JSON code block found in the response", parts[1]);
+      }
+      
+      return { conversation, originalJson };
+    } else {
+      console.log("No '--- Original Data ---' marker found in the response");
+      return { conversation: text, originalJson: null };
+    }
+  } catch (e) {
+    console.error("Error parsing LeakOsint response:", e);
+    return { conversation: text, originalJson: null };
+  }
+}
+
+export default function Home() {
+  const [messages, setMessages] = useState<{ 
+    sender: string; 
+    text: string; 
+    whoisJson?: any; 
+    whoisExplanation?: string;
+    isLeakOsint?: boolean;
+    leakOsintJson?: any;
+    censored?: boolean;
+    censoredFields?: string[];
+    webSearchResults?: any[];
+    isDork?: boolean;
+    dorkQuery?: string;
+    vulnerabilityAnalysis?: string;
+    wafData?: any;
+    subdomainData?: any;
+  }[]>([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<'chat' | 'websearch' | 'dork' | 'waf' | 'subdomain'>('chat');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [dorkTarget, setDorkTarget] = useState('');
+  const [dorkType, setDorkType] = useState<'security' | 'information' | 'technical'>('security');
+  const [dorkLoading, setDorkLoading] = useState(false);
+  const [wafTarget, setWafTarget] = useState('');
+  const [wafLoading, setWafLoading] = useState(false);
+  const [subdomainTarget, setSubdomainTarget] = useState('');
+  const [subdomainLoading, setSubdomainLoading] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+  
+  // Add initial help message when app loads
+  useEffect(() => {
+    const helpMessage = {
+      sender: 'ai',
+      text: `# 🔍 Welcome to OsintGPT! 
+
+I can help you with OSINT tasks using natural language commands. Try these:
+
+**🛡️ WAF Detection**
+• \`waf example.com\`
+• \`check if example.com has a firewall\`
+
+**🌐 Subdomain Discovery**
+• \`subdomains example.com\`
+• \`find subdomains for example.com\`
+
+**🔎 Google Dork Generator**
+• \`dork security wordpress.com\`
+• \`generate information dorks for example.com\`
+
+**🔍 Web Search**
+• \`search CVE-2023-1234\`
+• \`find latest cybersecurity news\`
+
+Type \`help\` anytime to see all available commands.`
+    };
+    
+    setMessages([helpMessage]);
+  }, []);
+
+  const handleSend = async () => {
+    if (!input.trim()) return;
+    const userMsg = { sender: 'user', text: input };
+    setMessages((msgs) => [...msgs, userMsg]);
+    setInput('');
+    setLoading(true);
+    
+    try {
+      // Check for help command
+      if (input.toLowerCase().trim() === 'help' || input.toLowerCase().trim() === '?') {
+        displayHelpMessage();
+        setLoading(false);
+        return;
+      }
+      
+      // Convert to lowercase for better matching but keep original for display
+      const lowerInput = input.toLowerCase();
+      
+      // More precise command pattern detection with better context understanding
+      // WAF Detection patterns
+      const wafPatterns = [
+        /^(?:check|scan|detect|analyze|find|show)?\s*(?:the|a)?\s*(?:waf|web\s*application\s*firewall|firewall)\s+(?:for|on|of|at)?\s*(?:the\s*(?:domain|website|site|url)\s+)?([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})$/i,
+        /^(?:waf|firewall)\s+(?:scan|check|detection|analysis)\s+(?:for)?\s*([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})$/i,
+        /^([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})\s+(?:waf|firewall)$/i,
+        /^(?:is|does)\s+([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})\s+(?:using|have|protected by|behind)\s+(?:a|any)?\s*(?:waf|firewall)/i
+      ];
+      
+      // Subdomain Discovery patterns
+      const subdomainPatterns = [
+        /^(?:find|discover|get|list|show|identify|enumerate)\s+(?:all|the)?\s*(?:subdomains|sub\s*domains|sub-domains)\s+(?:for|of|on|related to)?\s*(?:the\s*(?:domain|website|site|url)\s+)?([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})$/i,
+        /^(?:subdomain|subdomains|subfinder)\s+(?:scan|search|discovery|enumeration|finder|recon|reconnaissance)\s+(?:for|of)?\s*([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})$/i,
+        /^(?:subdomains|sub-domains|sub\s*domains)\s+(?:for|of)?\s*([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})$/i,
+        /^([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})\s+(?:subdomains|sub-domains|subdomain\s*discovery)$/i
+      ];
+      
+      // Google Dork patterns
+      const dorkPatterns = [
+        /^(?:create|make|generate|build|get|find)\s+(?:a|some|the)?\s*(?:google)?\s*(?:dork|dorking|dorks|google\s*dork)\s+(?:query|string|searches)?\s*(?:for|of|on|about|related\s*to)?\s*(?:(security|information|technical))?\s*(?:analysis|scan|check|search)?\s*(?:for|of|on|about)?\s*(.+)$/i,
+        /^(?:dork|google\s*dork)\s+(?:(security|information|technical))?\s+(?:for|about)?\s*(.+)$/i,
+        /^(?:google\s*)?(?:dork|dorking)\s+(?:for|about)?\s*(?:(security|information|technical))?\s*(.+)$/i
+      ];
+      
+      // Web Search patterns
+      const searchPatterns = [
+        /^(?:search|google|find|look\s*up|search\s*for|google\s*for)\s+(?:info|information|details|data)?\s*(?:about|on|for|related\s*to)?\s*(.+)$/i,
+        /^(?:web\s*search|internet\s*search|online\s*search)\s+(?:for|about)?\s*(.+)$/i,
+        /^(?:find|get|show)\s+(?:info|information|details|data|results)\s+(?:about|on|for|related\s*to)?\s*(.+)$/i,
+        /^(?:what|who|where|when|how|tell\s*me\s*about)\s+(?:is|are|was|were|can|do|does|has|have)?\s*(.+)$/i
+      ];
+      
+      // Test for domain-specific information requests
+      const domainInfoPattern = /^(?:information|info|details|data|whois|dns)\s+(?:about|on|for|of)\s+([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})$/i;
+      
+      // Context-aware matching for ambiguous queries
+      // Check if the input appears to be about security testing of a specific domain
+      const isSecurityContext = /\b(?:security|secure|vuln|vulnerability|hack|exploit|attack|pentest|penetration|test|breach|scan)\b/i.test(lowerInput);
+      
+      // Check if the input appears to contain a domain
+      const containsDomain = /([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})/i.test(lowerInput);
+      
+      // Check if the input appears to be asking for informational content
+      const isInformationalQuery = /\b(?:what is|how to|explain|tell me about|information on)\b/i.test(lowerInput);
+      
+      // Check if subdomain/domain tools are specifically mentioned
+      const isSubdomainToolMentioned = /\b(?:subfinder|subdomains|subdomain tool|amass|findomain|sublist3r)\b/i.test(lowerInput);
+      
+      // Match against WAF patterns first
+      let match: RegExpMatchArray | null = null;
+      for (const pattern of wafPatterns) {
+        match = lowerInput.match(pattern);
+        if (match && match[1]) {
+          await executeWafScan(match[1]);
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Match against subdomain patterns
+      for (const pattern of subdomainPatterns) {
+        match = lowerInput.match(pattern);
+        if (match && match[1]) {
+          await executeSubdomainScan(match[1]);
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Special case for subdomain tool mentions with a domain
+      if (isSubdomainToolMentioned && containsDomain) {
+        const domainMatch = lowerInput.match(/([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})/i);
+        if (domainMatch && domainMatch[1]) {
+          await executeSubdomainScan(domainMatch[1]);
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Match against dork patterns
+      for (const pattern of dorkPatterns) {
+        match = lowerInput.match(pattern);
+        if (match) {
+          // The first capture group might be the dork type, and the second is the target
+          // If type isn't captured, it will be undefined and the default will be used
+          const dorkType = match[1] ? 
+            (match[1].toLowerCase() as 'security' | 'information' | 'technical') : 
+            'security';
+          const dorkTarget = match[2] || match[1]; // If only one group matched, use that
+          
+          if (dorkTarget) {
+            await executeDorkRequest(dorkTarget, dorkType);
+            setLoading(false);
+            return;
+          }
+        }
+      }
+      
+      // Domain info request
+      const domainInfoMatch = lowerInput.match(domainInfoPattern);
+      if (domainInfoMatch && domainInfoMatch[1]) {
+        // For domain info requests, treat as a normal chat but with extra context
+        let messageToSend = `Provide detailed information about the domain ${domainInfoMatch[1]}, including WHOIS data if available. Format the information in a clear, structured way.`;
+        await handleNormalChat(messageToSend);
+        setLoading(false);
+        return;
+      }
+      
+      // Contextual decisions for ambiguous queries
+      if (containsDomain && isSecurityContext) {
+        // If it contains a domain and security terms, prioritize security scanning
+        const domainMatch = lowerInput.match(/([a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,})/i);
+        if (domainMatch && domainMatch[1]) {
+          // If it mentions subdomains specifically
+          if (/\bsubdomain/i.test(lowerInput)) {
+            await executeSubdomainScan(domainMatch[1]);
+          } else {
+            // Default to WAF scan for general security queries with domains
+            await executeWafScan(domainMatch[1]);
+          }
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Only match search patterns if none of the above matched and it's likely an informational query
+      if (isInformationalQuery || !containsDomain) {
+        for (const pattern of searchPatterns) {
+          match = lowerInput.match(pattern);
+          if (match && match[1]) {
+            await executeWebSearch(match[1]);
+            setLoading(false);
+            return;
+          }
+        }
+      }
+      
+      // Check for possible intended feature usage but with incorrect syntax
+      const possibleIntendedFeature = detectIntendedFeature(lowerInput);
+      if (possibleIntendedFeature) {
+        await provideFeatureGuidance(possibleIntendedFeature);
+        setLoading(false);
+        return;
+      }
+      
+      // If no command pattern was matched, proceed with normal chat
+      await handleNormalChat(input);
+      
+    } catch (e: unknown) {
+      console.error('Error processing command:', e);
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: `Error: ${e instanceof Error ? e.message : 'Could not process your request.'}` 
+      }]);
+      setLoading(false);
+    }
+  };
+  
+  // Detect if user might be trying to use a feature with incorrect syntax
+  const detectIntendedFeature = (input: string): string | null => {
+    // Potential WAF related terms
+    if (/\b(?:waf|firewall|protection|web application firewall|protected|security layer)\b/i.test(input)) {
+      return 'waf';
+    }
+    
+    // Potential subdomain related terms
+    if (/\b(?:subdomain|sub-domain|subdomains|sub domain|subfinder|domain finder|domain discovery)\b/i.test(input)) {
+      return 'subdomain';
+    }
+    
+    // Potential dork related terms
+    if (/\b(?:dork|google dork|dorking|google search operator|search syntax|advanced search)\b/i.test(input)) {
+      return 'dork';
+    }
+    
+    // Potential web search related terms
+    if (/\b(?:search for|find online|search engine|google for|look up online)\b/i.test(input)) {
+      return 'search';
+    }
+    
+    return null;
+  };
+  
+  // Provide guidance on how to correctly use a feature
+  const provideFeatureGuidance = async (featureType: string) => {
+    let guidanceMessage = '';
+    
+    switch(featureType) {
+      case 'waf':
+        guidanceMessage = `**🛡️ WAF Detection Help**
+
+It looks like you want to use the WAF detection feature. Try these commands:
+
+• \`waf example.com\`
+• \`check if example.com has a firewall\`
+• \`detect WAF on example.com\`
+
+Make sure to include a valid domain name.`;
+        break;
+        
+      case 'subdomain':
+        guidanceMessage = `**🌐 Subdomain Discovery Help**
+
+It looks like you want to find subdomains. Try these commands:
+
+• \`subdomains example.com\`
+• \`find subdomains for example.com\`
+• \`subdomain scan example.com\`
+
+Make sure to include a valid domain name.`;
+        break;
+        
+      case 'dork':
+        guidanceMessage = `**🔎 Google Dork Generator Help**
+
+It looks like you want to create Google dorks. Try these commands:
+
+• \`dork security example.com\`
+• \`generate information dork for example.com\`
+• \`create technical dork for php websites\`
+
+You can specify the type as 'security', 'information', or 'technical'.`;
+        break;
+        
+      case 'search':
+        guidanceMessage = `**🔍 Web Search Help**
+
+It looks like you want to search the web. Try these commands:
+
+• \`search cybersecurity news\`
+• \`find information about XSS attacks\`
+• \`look up recent data breaches\``;
+        break;
+    }
+    
+    setMessages((msgs) => [...msgs, { 
+      sender: 'ai', 
+      text: guidanceMessage
+    }]);
+  };
+  
+  // Handle normal chat messages
+  const handleNormalChat = async (messageText: string) => {
+    try {
+      // Only add explanation prompt for WHOIS/domain queries
+      let messageToSend = messageText;
+      if (/whois|domain/i.test(messageText)) {
+        messageToSend += '\nExplain the WHOIS data in plain language, not just JSON.';
+      }
+      
+      console.log('Sending message:', messageToSend);
+      
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: messageToSend })
+      });
+      
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      console.log('Response received, length:', data.response?.length || 0);
+      
+      // Extract metadata from the response
+      const censored = data.metadata?.censored || false;
+      const censoredFields = data.metadata?.censoredFields || [];
+      
+      // Try to extract WHOIS JSON and explanation
+      let whoisJson = null;
+      let whoisExplanation = '';
+      let aiText = data.response;
+      
+      // PATCH: fallback if model gives no response
+      if (!aiText || !aiText.trim()) {
+        aiText = 'No response from the model.';
+      }
+
+      // Check if this is a LeakOsint response
+      const isLeakOsintResp = isLeakOsintResponse(aiText);
+      let leakOsintJson = null;
+
+      if (isLeakOsintResp) {
+        console.log('Detected LeakOsint response');
+        // Parse the LeakOsint response
+        const { conversation, originalJson } = parseLeakOsintResponse(aiText);
+        aiText = conversation; // Use the formatted conversation part
+        leakOsintJson = originalJson;
+        
+        console.log('LeakOsint JSON available:', !!leakOsintJson);
+        if (censored) {
+          console.log('Response contains censored fields:', censoredFields);
+        }
+      } else {
+        // Try to find a JSON block in the response (for WHOIS)
+        const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            whoisJson = JSON.parse(jsonMatch[0]);
+          } catch (e: unknown) {
+            console.error('Failed to parse WHOIS JSON:', e);
+          }
+        }
+        // Try to extract explanation (text before JSON block)
+        if (whoisJson) {
+          whoisExplanation = aiText.split(jsonMatch[0])[0].trim();
+        }
+      }
+
+      setMessages((msgs) => [
+        ...msgs,
+        { 
+          sender: 'ai', 
+          text: aiText, 
+          whoisJson, 
+          whoisExplanation,
+          isLeakOsint: isLeakOsintResp,
+          leakOsintJson,
+          censored,
+          censoredFields
+        }
+      ]);
+    } catch (e: unknown) {
+      console.error('Error sending message:', e);
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: `Error: ${e instanceof Error ? e.message : 'Could not get response.'}` 
+      }]);
+    }
+  };
+
+  // Helper functions to execute each feature directly from chat
+  const executeWafScan = async (domain: string) => {
+    try {
+      const res = await fetch('/api/waf-detector', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: domain })
+      });
+      
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      
+      // Add the results to the chat
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai',
+        text: `WAF Analysis Results for ${data.domain || domain}`,
+        wafData: data
+      }]);
+    } catch (e: unknown) {
+      console.error('Error scanning WAF:', e);
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: `Error analyzing WAF: ${e instanceof Error ? e.message : 'An unknown error occurred'}` 
+      }]);
+    }
+  };
+
+  const executeSubdomainScan = async (domain: string) => {
+    try {
+      const res = await fetch('/api/subdomain-finder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: domain })
+      });
+      
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      
+      // Add the results to the chat
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai',
+        text: `Subdomain Analysis Results for ${data.domain || domain}`,
+        subdomainData: data
+      }]);
+    } catch (e: unknown) {
+      console.error('Error discovering subdomains:', e);
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: `Error finding subdomains: ${e instanceof Error ? e.message : 'An unknown error occurred'}` 
+      }]);
+    }
+  };
+
+  const executeDorkRequest = async (target: string, type: 'security' | 'information' | 'technical' = 'security') => {
+    try {
+      // First, ask AI to generate a dork query
+      const dorkPrompt = `Generate a Google dork query for ${type} analysis of: ${target}. 
+      The dork should be focused on finding potential vulnerabilities and exposed information.
+      Your response should be formatted as:
+      DORK: [the exact Google dork query with all necessary operators]
+      EXPLANATION: [brief explanation of what this dork is looking for]`;
+      
+      const dorkRes = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: dorkPrompt })
+      });
+      
+      if (!dorkRes.ok) {
+        throw new Error(`API error: ${dorkRes.status}`);
+      }
+      
+      const dorkData = await dorkRes.json();
+      const aiResponse = dorkData.response || '';
+      
+      // Extract the dork query using regex
+      const dorkMatch = aiResponse.match(/DORK:\s*(.+?)(?=\n|EXPLANATION:|$)/is);
+      const dorkQuery = dorkMatch ? dorkMatch[1].trim() : '';
+      
+      if (!dorkQuery) {
+        throw new Error('Failed to generate a valid dork query');
+      }
+      
+      // Add AI message with the dork
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: aiResponse,
+        isDork: true,
+        dorkQuery
+      }]);
+      
+      // Now use the dork for web search
+      console.log(`Performing search with dork: ${dorkQuery}`);
+      const searchRes = await fetch('/api/websearch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: dorkQuery })
+      });
+      
+      if (!searchRes.ok) {
+        throw new Error(`Search API error: ${searchRes.status}`);
+      }
+      
+      const searchData = await searchRes.json();
+      const results = searchData.results || [];
+      
+      // Add message with search results
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai',
+        text: `Search results for dork: ${dorkQuery}`,
+        webSearchResults: results
+      }]);
+      
+      // Finally, analyze the search results for vulnerability implications
+      if (results.length > 0) {
+        // Create a prompt that includes the search results for analysis
+        const resultsText = results.map((r: any) => 
+          `Title: ${r.title}\nURL: ${r.link}\nSnippet: ${r.snippet}`
+        ).join('\n\n');
+        
+        const analysisPrompt = `I performed a Google dork search using: ${dorkQuery}
+        
+        Here are the search results:
+        ${resultsText}
+        
+        Please provide a detailed security analysis including:
+        1. A summary of what vulnerabilities were found
+        2. Detailed explanation of each potential vulnerability with severity rating (Critical, High, Medium, Low)
+        3. Specific CVEs or known vulnerability types identified
+        4. Step-by-step exploitation instructions for each vulnerability (include exact payloads, parameters, and exploitation techniques)
+        5. Code examples of how to exploit these vulnerabilities (e.g. curl commands, Python scripts, etc.)
+        6. Mitigation recommendations for each vulnerability
+        
+        Format your response as follows:
+        ## VULNERABILITY SUMMARY
+        [Brief overview of all findings]
+        
+        ## DETAILED FINDINGS
+        ### [Vulnerability 1 Name]
+        - **Severity**: [Critical/High/Medium/Low]
+        - **Description**: [Explanation]
+        - **Exploitation Method**:
+          \`\`\`
+          [Exact steps/code to exploit]
+          \`\`\`
+        - **Mitigation**: [How to fix]
+        
+        ### [Vulnerability 2 Name]
+        ...and so on`;
+        
+        const analysisRes = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: analysisPrompt })
+        });
+        
+        if (analysisRes.ok) {
+          const analysisData = await analysisRes.json();
+          
+          // Add the vulnerability analysis message
+          setMessages((msgs) => [...msgs, { 
+            sender: 'ai',
+            text: analysisData.response || 'No vulnerability analysis available.',
+            vulnerabilityAnalysis: 'true'
+          }]);
+        }
+      }
+    } catch (e: unknown) {
+      console.error('Error in dork workflow:', e);
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: `Error with dorking: ${e instanceof Error ? e.message : 'An unknown error occurred'}` 
+      }]);
+    }
+  };
+
+  const executeWebSearch = async (query: string) => {
+    try {
+      const res = await fetch('/api/websearch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+      
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      
+      // Add the search results to chat
+      setMessages((msgs) => [
+        ...msgs,
+        {
+          sender: 'ai',
+          text: `Here are the web search results for "${query}":`,
+          webSearchResults: data.results
+        }
+      ]);
+    } catch (e: unknown) {
+      console.error('Error performing web search:', e);
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: `Web search error: ${e instanceof Error ? e.message : 'Could not get results.'}` 
+      }]);
+    }
+  };
+
+  // Display help message with available commands
+  const displayHelpMessage = () => {
+    const helpMessage = {
+      sender: 'ai',
+      text: `# 🔍 OsintGPT Command Guide
+
+**🛡️ WAF Detection**
+Detects Web Application Firewalls on domains.
+• \`waf example.com\`
+• \`check if example.com has a firewall\`
+• \`is domain.com behind a WAF?\`
+
+**🌐 Subdomain Discovery**
+Finds all subdomains using SecurityTrails API.
+• \`subdomains example.com\`
+• \`find subdomains for example.com\`
+• \`subfinder example.com\`
+
+**🔎 Google Dork Generator**
+Creates Google dorks for security research.
+• \`dork security wordpress.com\`
+• \`generate information dork for example.com\`
+• \`create technical dork for banking sites\`
+
+**🔍 Web Search**
+Searches the web for information.
+• \`search CVE-2023-1234\`
+• \`find latest cybersecurity news\`
+• \`look up XSS attacks\`
+
+**💬 General Chat**
+For any other questions, just ask normally.`
+    };
+    
+    setMessages((msgs) => [...msgs, helpMessage]);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    setSearchLoading(true);
+    try {
+      const res = await fetch('/api/websearch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: searchQuery })
+      });
+      
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      setSearchResults(data.results || []);
+      
+      // Add the search results to chat
+      setMessages((msgs) => [
+        ...msgs, 
+        { 
+          sender: 'user', 
+          text: `Web search: ${searchQuery}` 
+        },
+        {
+          sender: 'ai',
+          text: `Here are the web search results for "${searchQuery}":`,
+          webSearchResults: data.results
+        }
+      ]);
+      
+      // Clear search input and switch to chat tab
+      setSearchQuery('');
+      setActiveTab('chat');
+    } catch (e: unknown) {
+      console.error('Error performing web search:', e);
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: `Web search error: ${e instanceof Error ? e.message : 'Could not get results.'}` 
+      }]);
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSearch();
+    }
+  };
+
+  // Function to generate dork and perform search
+  const handleDorkRequest = async () => {
+    if (!dorkTarget.trim()) return;
+    
+    setDorkLoading(true);
+    // Add user message showing what they're looking for
+    setMessages((msgs) => [...msgs, { 
+      sender: 'user', 
+      text: `Generate Google dork for: ${dorkTarget} (${dorkType})` 
+    }]);
+    
+    try {
+      // First, ask AI to generate a dork query
+      const dorkPrompt = `Generate a Google dork query for ${dorkType} analysis of: ${dorkTarget}. 
+      The dork should be focused on finding potential vulnerabilities and exposed information.
+      Your response should be formatted as:
+      DORK: [the exact Google dork query with all necessary operators]
+      EXPLANATION: [brief explanation of what this dork is looking for]`;
+      
+      const dorkRes = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: dorkPrompt })
+      });
+      
+      if (!dorkRes.ok) {
+        throw new Error(`API error: ${dorkRes.status}`);
+      }
+      
+      const dorkData = await dorkRes.json();
+      const aiResponse = dorkData.response || '';
+      
+      // Extract the dork query using regex
+      const dorkMatch = aiResponse.match(/DORK:\s*(.+?)(?=\n|EXPLANATION:|$)/is);
+      const dorkQuery = dorkMatch ? dorkMatch[1].trim() : '';
+      
+      if (!dorkQuery) {
+        throw new Error('Failed to generate a valid dork query');
+      }
+      
+      // Add AI message with the dork
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: aiResponse,
+        isDork: true,
+        dorkQuery
+      }]);
+      
+      // Now use the dork for web search
+      console.log(`Performing search with dork: ${dorkQuery}`);
+      const searchRes = await fetch('/api/websearch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: dorkQuery })
+      });
+      
+      if (!searchRes.ok) {
+        throw new Error(`Search API error: ${searchRes.status}`);
+      }
+      
+      const searchData = await searchRes.json();
+      const results = searchData.results || [];
+      
+      // Add message with search results
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai',
+        text: `Search results for dork: ${dorkQuery}`,
+        webSearchResults: results
+      }]);
+      
+      // Finally, analyze the search results for vulnerability implications and provide exploitation instructions
+      if (results.length > 0) {
+        // Create a prompt that includes the search results for analysis
+        const resultsText = results.map((r: any) => 
+          `Title: ${r.title}\nURL: ${r.link}\nSnippet: ${r.snippet}`
+        ).join('\n\n');
+        
+        const analysisPrompt = `I performed a Google dork search using: ${dorkQuery}
+        
+        Here are the search results:
+        ${resultsText}
+        
+        Please provide a detailed security analysis including:
+        1. A summary of what vulnerabilities were found
+        2. Detailed explanation of each potential vulnerability with severity rating (Critical, High, Medium, Low)
+        3. Specific CVEs or known vulnerability types identified
+        4. Step-by-step exploitation instructions for each vulnerability (include exact payloads, parameters, and exploitation techniques)
+        5. Code examples of how to exploit these vulnerabilities (e.g. curl commands, Python scripts, etc.)
+        6. Mitigation recommendations for each vulnerability
+        
+        Format your response as follows:
+        ## VULNERABILITY SUMMARY
+        [Brief overview of all findings]
+        
+        ## DETAILED FINDINGS
+        ### [Vulnerability 1 Name]
+        - **Severity**: [Critical/High/Medium/Low]
+        - **Description**: [Explanation]
+        - **Exploitation Method**:
+          \`\`\`
+          [Exact steps/code to exploit]
+          \`\`\`
+        - **Mitigation**: [How to fix]
+        
+        ### [Vulnerability 2 Name]
+        ...and so on`;
+        
+        const analysisRes = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: analysisPrompt })
+        });
+        
+        if (analysisRes.ok) {
+          const analysisData = await analysisRes.json();
+          
+          // Add the vulnerability analysis message
+          setMessages((msgs) => [...msgs, { 
+            sender: 'ai',
+            text: analysisData.response || 'No vulnerability analysis available.',
+            vulnerabilityAnalysis: 'true'
+          }]);
+        }
+      }
+      
+      // Clear dork input and switch to chat view
+      setDorkTarget('');
+      setActiveTab('chat');
+      
+    } catch (e: unknown) {
+      console.error('Error in dork workflow:', e);
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: `Error with dorking: ${e instanceof Error ? e.message : 'An unknown error occurred'}` 
+      }]);
+    } finally {
+      setDorkLoading(false);
+    }
+  };
+
+  const handleDorkKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleDorkRequest();
+    }
+  };
+
+  // Function to handle WAF scanning
+  const handleWafScan = async () => {
+    if (!wafTarget.trim()) return;
+    
+    setWafLoading(true);
+    setMessages((msgs) => [...msgs, { 
+      sender: 'user', 
+      text: `Scan WAF for: ${wafTarget}` 
+    }]);
+    
+    try {
+      const res = await fetch('/api/waf-detector', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: wafTarget })
+      });
+      
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      
+      // Add the results to the chat
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai',
+        text: `WAF Analysis Results for ${data.domain || wafTarget}`,
+        wafData: data
+      }]);
+      
+      // Clear input and switch to chat
+      setWafTarget('');
+      setActiveTab('chat');
+    } catch (e: unknown) {
+      console.error('Error scanning WAF:', e);
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: `Error analyzing WAF: ${e instanceof Error ? e.message : 'An unknown error occurred'}` 
+      }]);
+    } finally {
+      setWafLoading(false);
+    }
+  };
+
+  const handleWafKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleWafScan();
+    }
+  };
+
+  // Function to handle subdomain discovery
+  const handleSubdomainRequest = async () => {
+    if (!subdomainTarget.trim()) return;
+    
+    setSubdomainLoading(true);
+    setMessages((msgs) => [...msgs, { 
+      sender: 'user', 
+      text: `Find subdomains for: ${subdomainTarget}` 
+    }]);
+    
+    try {
+      const res = await fetch('/api/subdomain-finder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: subdomainTarget })
+      });
+      
+      if (!res.ok) {
+        throw new Error(`API error: ${res.status}`);
+      }
+      
+      const data = await res.json();
+      
+      // Add the results to the chat
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai',
+        text: `Subdomain Analysis Results for ${data.domain || subdomainTarget}`,
+        subdomainData: data
+      }]);
+      
+      // Clear input and switch to chat
+      setSubdomainTarget('');
+      setActiveTab('chat');
+    } catch (e: unknown) {
+      console.error('Error discovering subdomains:', e);
+      setMessages((msgs) => [...msgs, { 
+        sender: 'ai', 
+        text: `Error finding subdomains: ${e instanceof Error ? e.message : 'An unknown error occurred'}` 
+      }]);
+    } finally {
+      setSubdomainLoading(false);
+    }
+  };
+
+  const handleSubdomainKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSubdomainRequest();
+    }
+  };
+
+  // UI component for LeakOsint results
+  const LeakOsintDisplay = ({ 
+    text, 
+    jsonData,
+    censored,
+    censoredFields 
+  }: { 
+    text: string; 
+    jsonData: any;
+    censored?: boolean;
+    censoredFields?: string[];
+  }) => {
+    const [showRawJson, setShowRawJson] = useState(false);
+    
+    const copyJson = () => {
+      try {
+        navigator.clipboard.writeText(JSON.stringify(jsonData, null, 2));
+        alert('JSON copied to clipboard!');
+      } catch (e: any) {
+        console.error('Failed to copy:', e);
+      }
+    };
+    
+    return (
+      <div style={{ display: 'block', textAlign: 'left', maxWidth: '100%' }}>
+        {/* Censorship notice if applicable */}
+        {censored && censoredFields && censoredFields.length > 0 && (
+          <div style={{
+            marginBottom: 12,
+            padding: '8px 12px',
+            background: 'rgba(255, 204, 0, 0.1)',
+            border: '1px solid rgba(255, 204, 0, 0.3)',
+            borderRadius: '4px',
+            fontSize: '14px',
+            color: '#ffcc00'
+          }}>
+            <span style={{ fontWeight: 'bold', marginRight: '4px' }}>⚠️ Note:</span>
+            Some sensitive information has been censored in this display: {censoredFields.join(', ')}
+            <br />
+            <span style={{ fontSize: '13px', opacity: 0.8 }}>
+              Original data is preserved in the JSON and can be viewed using the button below.
+            </span>
+          </div>
+        )}
+        
+        {/* Formatted conversation */}
+        <div style={{ 
+          marginBottom: 12, 
+          whiteSpace: 'pre-line',
+          lineHeight: '1.6',
+          fontSize: '15px'
+        }}>
+          {text}
+        </div>
+        
+        {/* JSON data controls */}
+        {jsonData && (
+          <div style={{ marginTop: 16, marginBottom: 8 }}>
+            <button 
+              onClick={() => setShowRawJson(!showRawJson)} 
+              style={{
+                background: '#1a1a1a',
+                border: '1px solid #333',
+                color: '#0070f3',
+                padding: '6px 12px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                marginRight: '8px'
+              }}
+            >
+              <span style={{ marginRight: '6px' }}>📊</span>
+              {showRawJson ? 'Hide' : 'Show'} Complete JSON Data
+              {censored && <span style={{ marginLeft: '4px', fontSize: '12px' }}>(Uncensored)</span>}
+            </button>
+            
+            <button 
+              onClick={copyJson}
+              style={{
+                background: '#333',
+                border: 'none',
+                color: '#fff',
+                padding: '6px 12px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '14px'
+              }}
+            >
+              Copy JSON
+            </button>
+          </div>
+        )}
+        
+        {/* Raw JSON data */}
+        {showRawJson && jsonData && (
+          <pre style={{ 
+            background: '#121212', 
+            padding: 12, 
+            borderRadius: 6, 
+            overflowX: 'auto', 
+            fontSize: 14, 
+            color: '#00cc89',
+            border: '1px solid #333',
+            maxHeight: '400px'
+          }}>
+            {JSON.stringify(jsonData, null, 2)}
+          </pre>
+        )}
+      </div>
+    );
+  };
+
+  // New component for displaying web search results
+  const WebSearchResultsDisplay = ({ results }: { results: any[] }) => {
+    if (!results || results.length === 0) {
+      return <div style={{ color: '#777' }}>No results found.</div>;
+    }
+    
+    return (
+      <div style={{ display: 'block', textAlign: 'left', maxWidth: '100%' }}>
+        {results.map((result, index) => (
+          <div 
+            key={index} 
+            style={{ 
+              marginBottom: 16, 
+              padding: 16, 
+              background: 'rgba(255, 255, 255, 0.05)', 
+              borderRadius: 8,
+              border: '1px solid rgba(255, 255, 255, 0.1)'
+            }}
+          >
+            <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
+              {result.displayed_link || result.link.replace(/^https?:\/\//, '').split('/')[0]}
+            </div>
+            
+            <a 
+              href={result.link} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              style={{ 
+                color: '#0070f3', 
+                textDecoration: 'none', 
+                fontWeight: 'bold',
+                fontSize: 16,
+                display: 'block',
+                marginBottom: 6
+              }}
+            >
+              {result.title}
+            </a>
+            
+            <div style={{ fontSize: 14, lineHeight: '1.5' }}>
+              {result.snippet}
+            </div>
+            
+            {/* Check for sensitive patterns that might indicate a vulnerability */}
+            {(result.title.toLowerCase().includes('error') || 
+              result.title.toLowerCase().includes('warning') ||
+              result.title.toLowerCase().includes('exception') ||
+              result.title.toLowerCase().includes('debug') ||
+              result.title.toLowerCase().includes('admin') ||
+              result.title.toLowerCase().includes('login') ||
+              result.title.toLowerCase().includes('config') ||
+              result.snippet.toLowerCase().includes('sql syntax') ||
+              result.snippet.toLowerCase().includes('exception') ||
+              result.snippet.toLowerCase().includes('warning:') ||
+              result.snippet.toLowerCase().includes('error:')) && (
+              <div style={{
+                marginTop: 8,
+                padding: '4px 8px',
+                background: 'rgba(255, 50, 50, 0.1)',
+                border: '1px solid rgba(255, 50, 50, 0.3)',
+                borderRadius: 4,
+                fontSize: 12,
+                color: '#ff5050',
+                display: 'inline-block'
+              }}>
+                Potential sensitive information exposed
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // Add vulnerability analysis component with exploitation instructions
+  const VulnerabilityAnalysisDisplay = ({ text }: { text: string }) => {
+    const sections = React.useMemo(() => {
+      // Parse the markdown-like sections for better display
+      const summaryMatch = text.match(/## VULNERABILITY SUMMARY\n(.*?)(?=\n## |$)/s);
+      const summary = summaryMatch ? summaryMatch[1].trim() : '';
+      
+      // Extract all vulnerability sections
+      const vulnRegex = /### \[(.*?)\]\n(.*?)(?=### \[|$)/gs;
+      const vulnMatches = [...text.matchAll(vulnRegex)];
+      
+      const vulnerabilities = vulnMatches.map(match => {
+        const title = match[1];
+        const content = match[2];
+        
+        // Extract severity
+        const severityMatch = content.match(/\*\*Severity\*\*:\s*(Critical|High|Medium|Low)/i);
+        const severity = severityMatch ? severityMatch[1] : 'Unknown';
+        
+        // Extract exploitation method
+        const exploitMatch = content.match(/\*\*Exploitation Method\*\*:\s*```\n(.*?)```/s);
+        const exploit = exploitMatch ? exploitMatch[1] : '';
+        
+        return { title, content, severity, exploit };
+      });
+      
+      return { summary, vulnerabilities };
+    }, [text]);
+    
+    return (
+      <div style={{ 
+        display: 'block', 
+        textAlign: 'left', 
+        maxWidth: '100%',
+      }}>
+        {/* Summary Section */}
+        <div style={{ 
+          background: 'rgba(255, 50, 50, 0.05)',
+          border: '1px solid rgba(255, 50, 50, 0.3)',
+          borderRadius: '8px',
+          padding: '12px 16px',
+          marginBottom: '16px'
+        }}>
+          <div style={{ 
+            fontWeight: 'bold', 
+            color: '#ff5050', 
+            marginBottom: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            fontSize: '16px'
+          }}>
+            <span style={{ marginRight: '8px' }}>🔍</span>
+            Vulnerability Summary
+          </div>
+          <div style={{ 
+            whiteSpace: 'pre-line',
+            lineHeight: '1.6',
+            fontSize: '14px'
+          }}>
+            {sections.summary || "No vulnerabilities identified."}
+          </div>
+        </div>
+        
+        {/* Vulnerability Details */}
+        {sections.vulnerabilities.map((vuln, index) => (
+          <div key={index} style={{
+            background: 'rgba(0, 0, 0, 0.2)',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginBottom: '16px'
+          }}>
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '12px'
+            }}>
+              <div style={{
+                fontWeight: 'bold',
+                fontSize: '15px'
+              }}>
+                {vuln.title}
+              </div>
+              <div style={{
+                background: getSeverityColor(vuln.severity),
+                color: '#fff',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                fontSize: '12px',
+                fontWeight: 'bold'
+              }}>
+                {vuln.severity}
+              </div>
+            </div>
+            
+            <div style={{
+              whiteSpace: 'pre-line',
+              lineHeight: '1.6',
+              fontSize: '14px',
+              marginBottom: '12px'
+            }}>
+              {vuln.content.replace(/\*\*(.*?)\*\*:/g, (_, p1) => `${p1}:`)}
+            </div>
+            
+            {vuln.exploit && (
+              <div style={{
+                background: '#121212',
+                border: '1px solid #333',
+                borderRadius: '4px',
+                padding: '12px',
+                fontFamily: 'monospace',
+                fontSize: '13px',
+                overflowX: 'auto',
+                marginTop: '8px',
+                color: '#00cc89'
+              }}>
+                {vuln.exploit}
+              </div>
+            )}
+            
+            <div style={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              marginTop: '12px'
+            }}>
+              <button
+                onClick={() => {
+                  if (vuln.exploit) {
+                    navigator.clipboard.writeText(vuln.exploit);
+                    alert('Exploit code copied to clipboard!');
+                  }
+                }}
+                style={{
+                  background: '#333',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '4px',
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}
+              >
+                <span style={{ marginRight: '4px' }}>📋</span>
+                Copy Exploit
+              </button>
+            </div>
+          </div>
+        ))}
+        
+        {sections.vulnerabilities.length === 0 && (
+          <div style={{
+            padding: '12px',
+            background: 'rgba(255, 255, 255, 0.05)',
+            borderRadius: '4px',
+            fontSize: '14px',
+            color: '#999'
+          }}>
+            No specific vulnerabilities could be identified from the search results. Consider refining your dork query for more targeted results.
+          </div>
+        )}
+      </div>
+    );
+  };
+  
+  // Helper function to get color based on severity
+  const getSeverityColor = (severity: string): string => {
+    switch (severity.toLowerCase()) {
+      case 'critical':
+        return '#cc0000';
+      case 'high':
+        return '#ff5500';
+      case 'medium':
+        return '#ffaa00';
+      case 'low':
+        return '#99cc00';
+      default:
+        return '#666666';
+    }
+  };
+
+  // Component to display WAF analysis results
+  const WafAnalysisDisplay = ({ data }: { data: any }) => {
+    if (!data) {
+      return <div style={{ color: '#777' }}>No WAF analysis data available.</div>;
+    }
+    
+    const { domain, wafInfo, bypassTechniques, securityTrailsData } = data;
+    const [showRawApiData, setShowRawApiData] = useState(false);
+    
+    // Check if there's a SecurityTrails API key error
+    const hasApiKeyError = 
+      !securityTrailsData && 
+      (wafInfo.error?.includes('API key not configured') || 
+       wafInfo.source === 'Local Scan');
+    
+    return (
+      <div style={{ display: 'block', textAlign: 'left', maxWidth: '100%' }}>
+        {/* SecurityTrails API Key Setup Guidance */}
+        {hasApiKeyError && (
+          <div style={{ 
+            background: 'rgba(255, 204, 0, 0.1)',
+            border: '1px solid rgba(255, 204, 0, 0.3)',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginBottom: '16px'
+          }}>
+            <div style={{ 
+              fontWeight: 'bold', 
+              color: '#ffcc00', 
+              marginBottom: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              fontSize: '16px'
+            }}>
+              <span style={{ marginRight: '8px' }}>⚠️</span>
+              SecurityTrails API Not Configured
+            </div>
+            <div style={{ fontSize: '14px' }}>
+              <p style={{ margin: '0 0 8px 0' }}>
+                For enhanced WAF detection with SecurityTrails:
+              </p>
+              <ol style={{ margin: '0 0 0 20px', padding: 0 }}>
+                <li style={{ marginBottom: '4px' }}>Get an API key from <a href="https://securitytrails.com" target="_blank" rel="noopener noreferrer" style={{ color: '#0070f3' }}>SecurityTrails</a></li>
+                <li style={{ marginBottom: '4px' }}>Create a <code style={{ background: '#1a1a1a', padding: '2px 4px', borderRadius: '3px' }}>.env.local</code> file in your project root</li>
+                <li style={{ marginBottom: '4px' }}>Add the following line: <code style={{ background: '#1a1a1a', padding: '2px 4px', borderRadius: '3px' }}>SECURITY_TRAILS_API_KEY=your_api_key_here</code></li>
+                <li>Restart your development server</li>
+              </ol>
+              <p style={{ margin: '8px 0 0 0', opacity: 0.8, fontSize: '13px' }}>
+                Currently using basic detection which is less accurate but doesn't require an API key.
+              </p>
+            </div>
+          </div>
+        )}
+        
+        {/* WAF Status Summary */}
+        <div style={{ 
+          background: wafInfo.detected ? 'rgba(255, 50, 50, 0.05)' : 'rgba(0, 204, 150, 0.05)',
+          border: `1px solid ${wafInfo.detected ? 'rgba(255, 50, 50, 0.3)' : 'rgba(0, 204, 150, 0.3)'}`,
+          borderRadius: '8px',
+          padding: '12px 16px',
+          marginBottom: '16px'
+        }}>
+          <div style={{ 
+            fontWeight: 'bold', 
+            color: wafInfo.detected ? '#ff5050' : '#00cc96', 
+            marginBottom: '8px',
+            display: 'flex',
+            alignItems: 'center',
+            fontSize: '16px'
+          }}>
+            <span style={{ marginRight: '8px' }}>
+              {wafInfo.detected ? '🛡️' : '✅'}
+            </span>
+            WAF {wafInfo.detected ? 'Detected' : 'Not Detected'}
+            {wafInfo.source && (
+              <span style={{ 
+                fontSize: '12px', 
+                marginLeft: '8px', 
+                color: '#999',
+                background: 'rgba(0, 0, 0, 0.2)',
+                padding: '2px 6px',
+                borderRadius: '4px'
+              }}>
+                Source: {wafInfo.source}
+              </span>
+            )}
+          </div>
+          
+          {wafInfo.detected && (
+            <div style={{ fontSize: '14px', marginBottom: '8px' }}>
+              <div><strong>WAF Type:</strong> {wafInfo.wafType || 'Unknown'}</div>
+              <div><strong>Confidence:</strong> {Math.round(wafInfo.confidence * 100)}%</div>
+            </div>
+          )}
+        </div>
+        
+        {/* SecurityTrails Data Summary - Only shown if available */}
+        {securityTrailsData && (
+          <div style={{ 
+            background: 'rgba(0, 112, 243, 0.05)', 
+            border: '1px solid rgba(0, 112, 243, 0.3)', 
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginBottom: '16px'
+          }}>
+            <div style={{ 
+              fontWeight: 'bold', 
+              color: '#0070f3', 
+              marginBottom: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <span style={{ marginRight: '8px' }}>🔍</span>
+                SecurityTrails Intelligence Data
+              </div>
+              <button 
+                onClick={() => setShowRawApiData(!showRawApiData)}
+                style={{
+                  background: '#1a1a1a',
+                  border: '1px solid #333',
+                  color: '#0070f3',
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '12px'
+                }}
+              >
+                {showRawApiData ? 'Hide' : 'Show'} Raw Data
+              </button>
+            </div>
+            
+            {/* Display some key SecurityTrails data points */}
+            <div style={{ fontSize: '14px', marginBottom: showRawApiData ? '12px' : '0' }}>
+              {securityTrailsData.hostname && (
+                <div style={{ marginBottom: '4px' }}>
+                  <strong>Hostname:</strong> {securityTrailsData.hostname}
+                </div>
+              )}
+              
+              {securityTrailsData.current_dns && securityTrailsData.current_dns.a && securityTrailsData.current_dns.a.length > 0 && (
+                <div style={{ marginBottom: '4px' }}>
+                  <strong>IP Address:</strong> {securityTrailsData.current_dns.a.join(', ')}
+                </div>
+              )}
+              
+              {securityTrailsData.alexa_rank && (
+                <div style={{ marginBottom: '4px' }}>
+                  <strong>Alexa Rank:</strong> {securityTrailsData.alexa_rank.toLocaleString()}
+                </div>
+              )}
+            </div>
+            
+            {/* Raw API data */}
+            {showRawApiData && (
+              <pre style={{ 
+                background: '#121212', 
+                border: '1px solid #333', 
+                borderRadius: '4px', 
+                padding: '10px', 
+                fontFamily: 'monospace', 
+                fontSize: '12px', 
+                overflowX: 'auto',
+                marginTop: '12px',
+                maxHeight: '300px',
+                overflowY: 'auto',
+                color: '#00cc89'
+              }}>
+                {JSON.stringify(securityTrailsData, null, 2)}
+              </pre>
+            )}
+          </div>
+        )}
+        
+        {/* HTTP Headers */}
+        {wafInfo.headers && Object.keys(wafInfo.headers).length > 0 && (
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{ fontWeight: 'bold', marginBottom: '8px', fontSize: '15px' }}>
+              Relevant HTTP Headers
+            </div>
+            <div style={{ 
+              background: '#121212', 
+              border: '1px solid #333', 
+              borderRadius: '4px', 
+              padding: '10px', 
+              fontFamily: 'monospace', 
+              fontSize: '12px', 
+              overflowX: 'auto' 
+            }}>
+              {Object.entries(wafInfo.headers).map(([key, value]) => (
+                <div key={key} style={{ marginBottom: '4px' }}>
+                  <span style={{ color: '#0070f3' }}>{key}:</span> 
+                  <span style={{ color: '#ccc' }}> {String(value)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Bypass Techniques */}
+        {bypassTechniques && bypassTechniques.length > 0 && (
+          <div>
+            <div style={{ fontWeight: 'bold', marginBottom: '12px', fontSize: '15px' }}>
+              Potential WAF Bypass Techniques
+            </div>
+            
+            {bypassTechniques.map((technique, idx) => (
+              <div key={idx} style={{
+                background: 'rgba(0, 0, 0, 0.2)',
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+                borderRadius: '8px',
+                padding: '12px 16px',
+                marginBottom: '12px'
+              }}>
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '10px'
+                }}>
+                  <div style={{ fontWeight: 'bold', fontSize: '14px' }}>
+                    {technique.technique}
+                  </div>
+                  {technique.severity && (
+                    <div style={{
+                      background: getSeverityColor(technique.severity),
+                      color: '#fff',
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      fontWeight: 'bold'
+                    }}>
+                      {technique.severity}
+                    </div>
+                  )}
+                </div>
+                
+                <div style={{ fontSize: '13px', marginBottom: '10px' }}>
+                  {technique.description}
+                </div>
+                
+                {technique.payload && (
+                  <div style={{
+                    background: '#121212',
+                    border: '1px solid #333',
+                    borderRadius: '4px',
+                    padding: '10px',
+                    fontFamily: 'monospace',
+                    fontSize: '12px',
+                    overflowX: 'auto',
+                    marginBottom: '10px',
+                    color: '#00cc89'
+                  }}>
+                    {technique.payload}
+                  </div>
+                )}
+                
+                {technique.usage && (
+                  <div style={{ fontSize: '13px', marginTop: '8px' }}>
+                    <strong>Usage:</strong> {technique.usage}
+                  </div>
+                )}
+                
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  marginTop: '8px'
+                }}>
+                  <button
+                    onClick={() => {
+                      if (technique.payload) {
+                        navigator.clipboard.writeText(technique.payload);
+                        alert('Payload copied to clipboard!');
+                      }
+                    }}
+                    style={{
+                      background: '#333',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '4px',
+                      padding: '4px 10px',
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center'
+                    }}
+                  >
+                    <span style={{ marginRight: '4px' }}>📋</span>
+                    Copy Payload
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Component to display subdomain analysis results
+  const SubdomainAnalysisDisplay = ({ data }: { data: any }) => {
+    if (!data) {
+      return <div style={{ color: '#777' }}>No subdomain data available.</div>;
+    }
+    
+    const { domain, subdomains, count, source, error, securityTrailsData } = data;
+    const [showRawApiData, setShowRawApiData] = useState(false);
+    const [filterValue, setFilterValue] = useState('');
+    
+    // Check if there's a SecurityTrails API key error
+    const hasApiKeyError = error && error.includes('API key not configured');
+    
+    // Filter subdomains based on search input
+    const filteredSubdomains = subdomains.filter(
+      (sub: any) => sub.name.toLowerCase().includes(filterValue.toLowerCase())
+    );
+    
+    return (
+      <div style={{ display: 'block', textAlign: 'left', maxWidth: '100%' }}>
+        {/* SecurityTrails API Key Setup Guidance */}
+        {hasApiKeyError && (
+          <div style={{ 
+            background: 'rgba(255, 204, 0, 0.1)',
+            border: '1px solid rgba(255, 204, 0, 0.3)',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginBottom: '16px'
+          }}>
+            <div style={{ 
+              fontWeight: 'bold', 
+              color: '#ffcc00', 
+              marginBottom: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              fontSize: '16px'
+            }}>
+              <span style={{ marginRight: '8px' }}>⚠️</span>
+              SecurityTrails API Not Configured
+            </div>
+            <div style={{ fontSize: '14px' }}>
+              <p style={{ margin: '0 0 8px 0' }}>
+                The subdomain finder requires SecurityTrails API:
+              </p>
+              <ol style={{ margin: '0 0 0 20px', padding: 0 }}>
+                <li style={{ marginBottom: '4px' }}>Get an API key from <a href="https://securitytrails.com" target="_blank" rel="noopener noreferrer" style={{ color: '#0070f3' }}>SecurityTrails</a></li>
+                <li style={{ marginBottom: '4px' }}>Create a <code style={{ background: '#1a1a1a', padding: '2px 4px', borderRadius: '3px' }}>.env.local</code> file in your project root</li>
+                <li style={{ marginBottom: '4px' }}>Add the following line: <code style={{ background: '#1a1a1a', padding: '2px 4px', borderRadius: '3px' }}>SECURITY_TRAILS_API_KEY=your_api_key_here</code></li>
+                <li>Restart your development server</li>
+              </ol>
+            </div>
+          </div>
+        )}
+        
+        {/* Subdomain Count Summary */}
+        {!error && (
+          <div style={{ 
+            background: 'rgba(0, 204, 150, 0.05)',
+            border: '1px solid rgba(0, 204, 150, 0.3)',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginBottom: '16px'
+          }}>
+            <div style={{ 
+              fontWeight: 'bold', 
+              color: '#00cc96', 
+              marginBottom: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '16px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <span style={{ marginRight: '8px' }}>🔍</span>
+                Subdomain Discovery Results
+              </div>
+              <div style={{ 
+                fontSize: '12px', 
+                color: '#999',
+                background: 'rgba(0, 0, 0, 0.2)',
+                padding: '2px 6px',
+                borderRadius: '4px'
+              }}>
+                Source: {source}
+              </div>
+            </div>
+            
+            <div style={{ fontSize: '14px', marginBottom: '8px' }}>
+              <div><strong>Target Domain:</strong> {domain}</div>
+              <div><strong>Subdomains Found:</strong> {count}</div>
+            </div>
+          </div>
+        )}
+        
+        {/* Search box for filtering subdomains */}
+        {subdomains && subdomains.length > 0 && (
+          <div style={{ marginBottom: '16px' }}>
+            <input
+              type="text"
+              value={filterValue}
+              onChange={(e) => setFilterValue(e.target.value)}
+              placeholder="Filter subdomains..."
+              style={{ 
+                width: '100%', 
+                padding: '8px 12px', 
+                borderRadius: 4, 
+                border: '1px solid #2a2a2a',
+                background: '#1e1e1e', 
+                color: '#ffffff', 
+                fontSize: 14,
+                outline: 'none'
+              }}
+            />
+          </div>
+        )}
+        
+        {/* List of subdomains */}
+        {subdomains && subdomains.length > 0 ? (
+          <div>
+            <div style={{ 
+              display: 'grid', 
+              gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', 
+              gap: '10px',
+              maxHeight: '300px',
+              overflowY: 'auto',
+              padding: '4px',
+              marginBottom: '16px'
+            }}>
+              {filteredSubdomains.map((sub: any, idx: number) => (
+                <div 
+                  key={idx} 
+                  style={{
+                    padding: '8px 12px',
+                    background: 'rgba(0, 0, 0, 0.2)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '4px',
+                    fontSize: '13px',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis'
+                  }}
+                >
+                  {sub.name}
+                </div>
+              ))}
+            </div>
+            
+            {/* Copy subdomains button */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
+              <button
+                onClick={() => {
+                  const subdomainText = subdomains.map((s: any) => s.name).join('\n');
+                  navigator.clipboard.writeText(subdomainText);
+                  alert('All subdomains copied to clipboard!');
+                }}
+                style={{
+                  background: '#333',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '4px',
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center'
+                }}
+              >
+                <span style={{ marginRight: '4px' }}>📋</span>
+                Copy All Subdomains
+              </button>
+            </div>
+          </div>
+        ) : !error ? (
+          <div style={{ 
+            padding: '12px 16px', 
+            background: 'rgba(0, 0, 0, 0.2)', 
+            borderRadius: '4px',
+            marginBottom: '16px'
+          }}>
+            No subdomains found for this domain.
+          </div>
+        ) : null}
+        
+        {/* Error message */}
+        {error && !hasApiKeyError && (
+          <div style={{ 
+            background: 'rgba(255, 50, 50, 0.1)',
+            border: '1px solid rgba(255, 50, 50, 0.3)',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginBottom: '16px',
+            color: '#ff5050'
+          }}>
+            <div style={{ 
+              fontWeight: 'bold',
+              marginBottom: '8px',
+              display: 'flex',
+              alignItems: 'center'
+            }}>
+              <span style={{ marginRight: '8px' }}>⚠️</span>
+              Error Finding Subdomains
+            </div>
+            <div>{error}</div>
+          </div>
+        )}
+        
+        {/* SecurityTrails raw data toggle */}
+        {securityTrailsData && (
+          <div>
+            <button 
+              onClick={() => setShowRawApiData(!showRawApiData)}
+              style={{
+                background: '#1a1a1a',
+                border: '1px solid #333',
+                color: '#0070f3',
+                padding: '4px 8px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                marginBottom: '8px'
+              }}
+            >
+              {showRawApiData ? 'Hide' : 'Show'} Raw API Data
+            </button>
+            
+            {/* Raw API data */}
+            {showRawApiData && (
+              <pre style={{ 
+                background: '#121212', 
+                border: '1px solid #333', 
+                borderRadius: '4px', 
+                padding: '10px', 
+                fontFamily: 'monospace', 
+                fontSize: '12px', 
+                overflowX: 'auto',
+                maxHeight: '300px',
+                overflowY: 'auto',
+                color: '#00cc89'
+              }}>
+                {JSON.stringify(securityTrailsData, null, 2)}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', minHeight: '100vh', background: '#121212', padding: '0 16px' }}>
+      {/* Header */}
+      <header style={{ padding: '20px 0', borderBottom: '1px solid #2a2a2a', marginBottom: 24 }}>
+        <div style={{ maxWidth: 800, margin: '0 auto', textAlign: 'center' }}>
+          <h1 style={{ fontSize: 36, fontWeight: 700, color: '#ffffff', margin: 0 }}>OsintGPT</h1>
+          
+          {/* Tabs */}
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 16 }}>
+            <button
+              onClick={() => setActiveTab('chat')}
+              style={{
+                background: activeTab === 'chat' ? '#0070f3' : 'transparent',
+                border: 'none',
+                borderRadius: '4px',
+                padding: '8px 16px',
+                color: activeTab === 'chat' ? '#fff' : '#999',
+                marginRight: 8,
+                cursor: 'pointer'
+              }}
+            >
+              Chat
+            </button>
+            <button
+              onClick={() => setActiveTab('websearch')}
+              style={{
+                background: activeTab === 'websearch' ? '#0070f3' : 'transparent',
+                border: 'none',
+                borderRadius: '4px',
+                padding: '8px 16px',
+                color: activeTab === 'websearch' ? '#fff' : '#999',
+                marginRight: 8,
+                cursor: 'pointer'
+              }}
+            >
+              Web Search
+            </button>
+            <button
+              onClick={() => setActiveTab('dork')}
+              style={{
+                background: activeTab === 'dork' ? '#0070f3' : 'transparent',
+                border: 'none',
+                borderRadius: '4px',
+                padding: '8px 16px',
+                color: activeTab === 'dork' ? '#fff' : '#999',
+                marginRight: 8,
+                cursor: 'pointer'
+              }}
+            >
+              Google Dork
+            </button>
+            <button
+              onClick={() => setActiveTab('waf')}
+              style={{
+                background: activeTab === 'waf' ? '#0070f3' : 'transparent',
+                border: 'none',
+                borderRadius: '4px',
+                padding: '8px 16px',
+                color: activeTab === 'waf' ? '#fff' : '#999',
+                cursor: 'pointer'
+              }}
+            >
+              WAF Detector
+            </button>
+            <button
+              onClick={() => setActiveTab('subdomain')}
+              style={{
+                background: activeTab === 'subdomain' ? '#0070f3' : 'transparent',
+                border: 'none',
+                borderRadius: '4px',
+                padding: '8px 16px',
+                color: activeTab === 'subdomain' ? '#fff' : '#999',
+                cursor: 'pointer'
+              }}
+            >
+              Subdomain Finder
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main style={{ flex: 1, maxWidth: 800, width: '100%', margin: '0 auto', paddingBottom: 24 }}>
+        {/* Input Section */}
+        <div style={{ position: 'relative', marginBottom: 32 }}>
+          {activeTab === 'chat' ? (
+            <input
+              type="text"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask anything, or try 'find subdomains for example.com' (type 'help' for commands)"
+              style={{ 
+                width: '100%', 
+                padding: '16px', 
+                borderRadius: 8, 
+                border: '1px solid #2a2a2a',
+                background: '#1e1e1e', 
+                color: '#ffffff', 
+                fontSize: 16,
+                outline: 'none'
+              }}
+              disabled={loading}
+              autoFocus
+            />
+          ) : activeTab === 'websearch' ? (
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
+              placeholder="Search the web..."
+              style={{ 
+                width: '100%', 
+                padding: '16px', 
+                borderRadius: 8, 
+                border: '1px solid #2a2a2a',
+                background: '#1e1e1e', 
+                color: '#ffffff', 
+                fontSize: 16,
+                outline: 'none'
+              }}
+              disabled={searchLoading}
+              autoFocus
+            />
+          ) : activeTab === 'dork' ? (
+            <div style={{ width: '100%' }}>
+              <input
+                type="text"
+                value={dorkTarget}
+                onChange={e => setDorkTarget(e.target.value)}
+                onKeyDown={handleDorkKeyDown}
+                placeholder="Enter target domain or technology..."
+                style={{ 
+                  width: '100%', 
+                  padding: '16px', 
+                  borderRadius: 8, 
+                  border: '1px solid #2a2a2a',
+                  background: '#1e1e1e', 
+                  color: '#ffffff', 
+                  fontSize: 16,
+                  outline: 'none',
+                  marginBottom: '10px'
+                }}
+                disabled={dorkLoading}
+                autoFocus
+              />
+              
+              <div style={{ display: 'flex', marginBottom: '10px' }}>
+                <span style={{ color: '#999', marginRight: '10px', display: 'flex', alignItems: 'center' }}>Dork type:</span>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => setDorkType('security')}
+                    style={{
+                      background: dorkType === 'security' ? '#0070f3' : '#333',
+                      border: 'none',
+                      borderRadius: '4px',
+                      padding: '6px 12px',
+                      color: '#fff',
+                      fontSize: '14px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Security
+                  </button>
+                  <button
+                    onClick={() => setDorkType('information')}
+                    style={{
+                      background: dorkType === 'information' ? '#0070f3' : '#333',
+                      border: 'none',
+                      borderRadius: '4px',
+                      padding: '6px 12px',
+                      color: '#fff',
+                      fontSize: '14px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Information
+                  </button>
+                  <button
+                    onClick={() => setDorkType('technical')}
+                    style={{
+                      background: dorkType === 'technical' ? '#0070f3' : '#333',
+                      border: 'none',
+                      borderRadius: '4px',
+                      padding: '6px 12px',
+                      color: '#fff',
+                      fontSize: '14px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Technical
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : activeTab === 'waf' ? (
+            <div style={{ width: '100%' }}>
+              <input
+                type="text"
+                value={wafTarget}
+                onChange={e => setWafTarget(e.target.value)}
+                onKeyDown={handleWafKeyDown}
+                placeholder="Enter domain to analyze (e.g., example.com)"
+                style={{ 
+                  width: '100%', 
+                  padding: '16px', 
+                  borderRadius: 8, 
+                  border: '1px solid #2a2a2a',
+                  background: '#1e1e1e', 
+                  color: '#ffffff', 
+                  fontSize: 16,
+                  outline: 'none'
+                }}
+                disabled={wafLoading}
+                autoFocus
+              />
+            </div>
+          ) : (
+            <div style={{ width: '100%' }}>
+              <input
+                type="text"
+                value={subdomainTarget}
+                onChange={e => setSubdomainTarget(e.target.value)}
+                onKeyDown={handleSubdomainKeyDown}
+                placeholder="Enter domain to analyze (e.g., example.com)"
+                style={{ 
+                  width: '100%', 
+                  padding: '16px', 
+                  borderRadius: 8, 
+                  border: '1px solid #2a2a2a',
+                  background: '#1e1e1e', 
+                  color: '#ffffff', 
+                  fontSize: 16,
+                  outline: 'none'
+                }}
+                disabled={subdomainLoading}
+                autoFocus
+              />
+            </div>
+          )}
+          
+          <button
+            onClick={
+              activeTab === 'chat' ? handleSend : 
+              activeTab === 'websearch' ? handleSearch : 
+              activeTab === 'dork' ? handleDorkRequest : 
+              activeTab === 'waf' ? handleWafScan : 
+              handleSubdomainRequest
+            }
+            disabled={
+              activeTab === 'chat' ? loading || !input.trim() : 
+              activeTab === 'websearch' ? searchLoading || !searchQuery.trim() : 
+              activeTab === 'dork' ? dorkLoading || !dorkTarget.trim() :
+              activeTab === 'waf' ? wafLoading || !wafTarget.trim() :
+              subdomainLoading || !subdomainTarget.trim()
+            }
+            style={{ 
+              position: 'absolute', 
+              right: 8, 
+              top: activeTab === 'dork' ? '30px' : activeTab === 'waf' ? '30px' : '50%', 
+              transform: activeTab === 'dork' ? 'none' : activeTab === 'waf' ? 'none' : 'translateY(-50%)',
+              padding: '8px 16px',
+              borderRadius: 4, 
+              background: '#0070f3', 
+              color: '#fff', 
+              border: 'none',
+              cursor: (
+                activeTab === 'chat' ? loading : 
+                activeTab === 'websearch' ? searchLoading : 
+                activeTab === 'dork' ? dorkLoading :
+                activeTab === 'waf' ? wafLoading :
+                subdomainLoading
+              ) ? 'not-allowed' : 'pointer',
+              opacity: (
+                activeTab === 'chat' ? loading || !input.trim() : 
+                activeTab === 'websearch' ? searchLoading || !searchQuery.trim() : 
+                activeTab === 'dork' ? dorkLoading || !dorkTarget.trim() :
+                activeTab === 'waf' ? wafLoading || !wafTarget.trim() :
+                subdomainLoading || !subdomainTarget.trim()
+              ) ? 0.7 : 1
+            }}
+          >
+            {activeTab === 'chat' 
+              ? (loading ? 'Sending...' : 'Send')
+              : activeTab === 'websearch'
+              ? (searchLoading ? 'Searching...' : 'Search')
+              : activeTab === 'dork'
+              ? (dorkLoading ? 'Processing...' : 'Generate Dork')
+              : activeTab === 'waf'
+              ? (wafLoading ? 'Scanning...' : 'Scan WAF')
+              : (subdomainLoading ? 'Processing...' : 'Scan Subdomains')
+            }
+          </button>
+        </div>
+
+        {/* Messages */}
+        <div style={{ 
+          width: '100%',
+          background: '#1e1e1e',
+          border: '1px solid #2a2a2a',
+          borderRadius: 8,
+          padding: messages.length > 0 ? 16 : 0,
+          minHeight: messages.length > 0 ? 300 : 0,
+          maxHeight: 500,
+          overflowY: 'auto',
+          display: messages.length > 0 ? 'block' : 'none'
+        }}>
+          {messages.map((msg, i) => (
+            <div key={i} style={{ marginBottom: 16, padding: '12px 16px', background: msg.sender === 'user' ? '#2a2a2a' : 'transparent', borderRadius: 8 }}>
+              <div style={{ fontWeight: 'bold', color: msg.sender === 'user' ? '#0070f3' : '#00cc89', marginBottom: 4 }}>
+                {msg.sender === 'user' ? 'You' : 'AI'}
+              </div>
+              
+              {msg.sender === 'ai' && msg.whoisJson ? (
+                <div style={{ display: 'block', textAlign: 'left', maxWidth: '100%' }}>
+                  {msg.whoisExplanation && <div style={{ marginBottom: 8 }}>{msg.whoisExplanation}</div>}
+                  <pre style={{ 
+                    background: '#121212', 
+                    padding: 12, 
+                    borderRadius: 6, 
+                    overflowX: 'auto', 
+                    fontSize: 14, 
+                    color: '#00cc89',
+                    border: '1px solid #333'
+                  }}>{formatWhois(msg.whoisJson)}</pre>
+                </div>
+              ) : msg.sender === 'ai' && msg.isLeakOsint ? (
+                <LeakOsintDisplay 
+                  text={msg.text} 
+                  jsonData={msg.leakOsintJson} 
+                  censored={msg.censored}
+                  censoredFields={msg.censoredFields}
+                />
+              ) : msg.sender === 'ai' && msg.webSearchResults ? (
+                <div>
+                  <div style={{ marginBottom: 8 }}>{msg.text}</div>
+                  <WebSearchResultsDisplay results={msg.webSearchResults} />
+                </div>
+              ) : msg.sender === 'ai' && msg.vulnerabilityAnalysis ? (
+                <VulnerabilityAnalysisDisplay text={msg.text} />
+              ) : msg.sender === 'ai' && msg.isDork ? (
+                <div>
+                  <div style={{ marginBottom: 8, whiteSpace: 'pre-line' }}>{msg.text}</div>
+                  {msg.dorkQuery && (
+                    <div style={{
+                      marginTop: 8,
+                      padding: '8px 12px',
+                      background: '#121212',
+                      border: '1px solid #333',
+                      borderRadius: 4,
+                      fontFamily: 'monospace',
+                      fontSize: 14,
+                      color: '#00cc89',
+                      overflow: 'auto'
+                    }}>
+                      {msg.dorkQuery}
+                    </div>
+                  )}
+                </div>
+              ) : msg.sender === 'ai' && msg.wafData ? (
+                <WafAnalysisDisplay data={msg.wafData} />
+              ) : msg.sender === 'ai' && msg.subdomainData ? (
+                <SubdomainAnalysisDisplay data={msg.subdomainData} />
+              ) : (
+                <div>{msg.text}</div>
+              )}
+            </div>
+          ))}
+          <div ref={messagesEndRef} />
+        </div>
+      </main>
+
+      {/* Footer */}
+      <footer style={{ padding: '16px 0', borderTop: '1px solid #2a2a2a', textAlign: 'center' }}>
+        <div style={{ color: '#777', fontSize: 14 }}>
+          OsintGPT © {new Date().getFullYear()}
+        </div>
+      </footer>
+    </div>
+  );
+} 

@@ -10,6 +10,7 @@ interface YandexSearchResults {
   image_sizes_message?: string;
   vision_text?: any;
   similar_images?: any[];
+  suggested_searches?: any[];
   error?: string;
 }
 
@@ -28,8 +29,6 @@ export async function POST(req: Request) {
     if (!apiKey) {
       console.error('SERPAPI_KEY environment variable is not set.');
       return NextResponse.json({ error: 'Server configuration error: SERPAPI_KEY is missing' }, { status: 500 });
-    } else {
-      console.log('SERPAPI_KEY is set.');
     }
 
     // Call the SerpApi Yandex Reverse Image search API
@@ -77,46 +76,72 @@ export async function POST(req: Request) {
 
 async function performYandexReverseImageSearch(imageUrl: string, text?: string): Promise<YandexSearchResults> {
   try {
-    // Get the SerpApi key from environment variables
     const apiKey = process.env.SERPAPI_KEY;
     
     if (!apiKey) {
       throw new Error('SerpApi key not configured. Add SERPAPI_KEY to your environment variables.');
     }
+
+    // Validate API key format
+    if (!apiKey.match(/^[a-zA-Z0-9]{32,}$/)) {
+      throw new Error('Invalid API key format. Please check your SERPAPI_KEY.');
+    }
     
-    // Use the serpapi library for Yandex reverse image search with URL and optional text
-    return new Promise<YandexSearchResults>((resolve, reject) => {
-      const params: any = {
-        api_key: apiKey,
-        engine: "yandex_images",
-        url: imageUrl
-      };
-      if (text) {
-        params.text = text; // Use text only if provided
-      }
-      getJson(params, (json: any) => {
-        if (json.error) {
-          // Instead of rejecting, pass the error through so we can handle it gracefully
-          resolve({
-            error: json.error,
-            search_metadata: json.search_metadata || {},
-            search_parameters: json.search_parameters || {}
-          });
-        } else {
-          // Process and return the relevant results including specific Yandex fields
-          resolve({
-            search_metadata: json.search_metadata,
-            search_parameters: json.search_parameters,
-            images_results: json.images_results || [],
-            inline_images: json.inline_images || [],
-            image_sizes_message: json.image_sizes_message,
-            vision_text: json.vision_text || null,
-            similar_images: json.similar_images || []
-          });
-        }
-      });
+    console.log('Using SERPAPI_KEY:', apiKey.substring(0, 4) + '...' + apiKey.substring(apiKey.length - 4));
+
+    // Build the search parameters according to the documentation
+    const params = new URLSearchParams({
+      engine: 'yandex_images',
+      api_key: apiKey,
+      output: 'json',
+      url: imageUrl,
+      text: "i",
+      yandex_domain: 'yandex.com'
     });
-  } catch (error) {
+
+    if (text) {
+      params.append('text', text);
+    }
+
+    const searchUrl = `https://serpapi.com/search.json?${params.toString()}`;
+    console.log('Search URL (without API key):', searchUrl.replace(apiKey, 'HIDDEN'));
+
+    // Make the request with proper error handling and timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+    try {
+      const response = await fetch(searchUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+        },
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`SerpApi error: ${response.status} - ${errorText}`);
+      }
+
+      const data = await response.json();
+      console.log('SerpApi response metadata:', data.search_metadata);
+
+      return {
+        search_metadata: data.search_metadata,
+        search_parameters: data.search_parameters,
+        images_results: data.images_results || [],
+        inline_images: data.inline_images || [],
+        image_sizes_message: data.image_sizes_message,
+        vision_text: data.vision_text || null,
+        similar_images: data.similar_images || [],
+        suggested_searches: data.suggested_searches || [],
+        error: data.error || null
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } catch (error: any) {
     console.error('Error performing Yandex reverse image search:', error);
     throw error;
   }

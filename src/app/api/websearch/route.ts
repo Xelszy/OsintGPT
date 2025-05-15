@@ -168,27 +168,83 @@ export async function POST(req: Request) {
 // Define helper functions
 async function fetchSerpApiVideos(query: string) {
   const apiKey = process.env.SERPAPI_KEY;
-  if (!apiKey) throw new Error('SERPAPI_KEY is missing');
+  if (!apiKey) {
+    console.error('SERPAPI_KEY environment variable is not set.');
+    throw new Error('SERPAPI_KEY is missing. Please ensure it is properly set in your environment variables.');
+  }
+  if (!apiKey.match(/^[a-zA-Z0-9]{32,}$/)) {
+    console.error('Invalid SERPAPI_KEY format');
+    throw new Error('Invalid API key format. Please check your SERPAPI_KEY.');
+  }
   const url = `https://serpapi.com/search.json?engine=google&api_key=${apiKey}&q=${encodeURIComponent(query)}&tbm=vid`;
   const response = await fetch(url);
-  if (!response.ok) throw new Error('Video search failed');
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Video search failed:', errorText);
+    throw new Error(`Video search failed: ${response.status} ${errorText}`);
+  }
   return await response.json();
 }
 
 async function fetchSerpApiYandexReverse(imageUrl: string) {
   const apiKey = process.env.SERPAPI_KEY;
-  if (!apiKey) throw new Error('SERPAPI_KEY is missing');
-  const url = `https://serpapi.com/search.json?engine=yandex_images&api_key=${apiKey}&source=reverse_image&url=${encodeURIComponent(imageUrl)}`;
+  if (!apiKey) {
+    console.error('SERPAPI_KEY environment variable is not set.');
+    throw new Error('SERPAPI_KEY is missing. Please ensure it is properly set in your environment variables.');
+  }
+  if (!apiKey.match(/^[a-zA-Z0-9]{32,}$/)) {
+    console.error('Invalid SERPAPI_KEY format');
+    throw new Error('Invalid API key format. Please check your SERPAPI_KEY.');
+  }
+  if (!imageUrl || typeof imageUrl !== 'string' || imageUrl.trim().length === 0) {
+    throw new Error('Image URL must be a non-empty string');
+  }
+  const url = `https://serpapi.com/search.json?engine=yandex_images&api_key=${apiKey}&source=reverse_image&url=${encodeURIComponent(imageUrl.trim())}&yandex_domain=yandex.ru`;
   const response = await fetch(url);
-  if (!response.ok) throw new Error('Reverse image search failed');
-  return await response.json();
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Reverse image search failed:', errorText);
+    throw new Error(`Reverse image search failed: ${response.status} ${errorText}`);
+  }
+  const data = await response.json();
+  return {
+    search_metadata: data.search_metadata,
+    search_parameters: data.search_parameters,
+    images_results: data.images_results || [],
+    inline_images: data.inline_images || [],
+    similar_images: data.similar_images || [],
+    vision_text: data.vision_text || null,
+    suggested_searches: data.suggested_searches || []
+  };
 }
 
 async function fetchSerpApiYandexImages(query: string) {
   const apiKey = process.env.SERPAPI_KEY;
-  if (!apiKey) throw new Error('SERPAPI_KEY is missing');
-  const url = `https://serpapi.com/search.json?engine=yandex_images&api_key=${apiKey}&q=${encodeURIComponent(query)}`;
+  if (!apiKey) {
+    console.error('SERPAPI_KEY environment variable is not set.');
+    throw new Error('SERPAPI_KEY is missing. Please ensure it is properly set in your environment variables.');
+  }
+  if (!apiKey.match(/^[a-zA-Z0-9]{32,}$/)) {
+    console.error('Invalid SERPAPI_KEY format');
+    throw new Error('Invalid API key format. Please check your SERPAPI_KEY.');
+  }
+  if (!query || typeof query !== 'string' || query.trim().length === 0) {
+    throw new Error('Search query must be a non-empty string');
+  }
+  const url = `https://serpapi.com/search.json?engine=yandex_images&api_key=${apiKey}&q=${encodeURIComponent(query.trim())}&yandex_domain=yandex.ru`;
   const response = await fetch(url);
-  if (!response.ok) throw new Error('Image search failed');
-  return await response.json();
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Image search failed:', errorText);
+    throw new Error(`Image search failed: ${response.status} ${errorText}`);
+  }
+  const data = await response.json();
+  return {
+    search_metadata: data.search_metadata,
+    search_parameters: data.search_parameters,
+    images_results: data.images_results || [],
+    inline_images: data.inline_images || [],
+    similar_images: data.similar_images || [],
+    suggested_searches: data.suggested_searches || []
+  };
 } 

@@ -23,12 +23,12 @@ export default function ImageSearchPage() {
     setSearchResults(null);
 
     try {
-      const response = await fetch('/api/websearch', {
+      const response = await fetch('/api/yandex-image', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ query: `serpapi_yandex_images ${searchQuery}` }),
+        body: JSON.stringify({ query: searchQuery }),
       });
 
       const data = await response.json();

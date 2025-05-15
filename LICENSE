@@ -373,7 +373,7 @@ that material) supplement the terms of this License with terms:
     requiring that modified versions of such material be marked in
     reasonable ways as different from the original version; or
 
-    d) Limiting use for publicity purposes of names of licensors or
+    d) Limiting the use for publicity purposes of names of licensors or
     authors of the material; or
 
     e) Declining to grant rights under trademark law for use of some
@@ -642,7 +642,7 @@ the "copyright" line and a pointer to where the full notice is found.
     This program is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License v3.0 for more details.
+    GNU General Public License for more details.
 
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
@@ -672,15 +672,3 @@ may consider it more useful to permit linking proprietary applications with
 the library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.  But first, please read
 <https://www.gnu.org/licenses/why-not-lgpl.html>.
-
-ADDITIONAL SECURITY DISCLAIMER:
-
-This software is designed for authorized security testing and educational purposes only. Users must:
-
-1. Obtain proper authorization before testing any system
-2. Comply with all applicable laws and regulations
-3. Follow responsible disclosure practices
-4. Respect privacy and data protection regulations
-5. Use the software ethically and responsibly
-
-The developers are not responsible for any misuse or damage caused by this software. Users are solely responsible for ensuring they have proper authorization before conducting any security tests. 
